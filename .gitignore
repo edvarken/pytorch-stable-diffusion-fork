@@ -162,4 +162,8 @@ cython_debug/
 data/
 images/
 
+# Edward
+old_data/
+generated_onnx/
+
 .DS_Store

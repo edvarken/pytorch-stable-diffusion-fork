@@ -43,9 +43,13 @@ class UNET_ResidualBlock(nn.Module):
         # time: (1, 1280)
 
         residue = feature
-        
+
+        # print("############################################################################################################")
+        # print(feature.shape)
         # (Batch_Size, In_Channels, Height, Width) -> (Batch_Size, In_Channels, Height, Width)
         feature = self.groupnorm_feature(feature)
+        # print("############################################################################################################")
+        # print(feature.shape)
         
         # (Batch_Size, In_Channels, Height, Width) -> (Batch_Size, In_Channels, Height, Width)
         feature = F.silu(feature)
@@ -56,12 +60,12 @@ class UNET_ResidualBlock(nn.Module):
         # (1, 1280) -> (1, 1280)
         time = F.silu(time)
 
-        # (1, 1280) -> (1, Out_Channels)
+        # (1, 1280) -> (1, Out_Channels=320,640,1280)
         time = self.linear_time(time)
         
         # Add width and height dimension to time. 
         # (Batch_Size, Out_Channels, Height, Width) + (1, Out_Channels, 1, 1) -> (Batch_Size, Out_Channels, Height, Width)
-        merged = feature + time.unsqueeze(-1).unsqueeze(-1)
+        merged = feature + time.unsqueeze(-1).unsqueeze(-1) # the time tensor is broadcasted to the same shape as the feature tensor and added to it
         
         # (Batch_Size, Out_Channels, Height, Width) -> (Batch_Size, Out_Channels, Height, Width)
         merged = self.groupnorm_merged(merged)
@@ -76,15 +80,15 @@ class UNET_ResidualBlock(nn.Module):
         return merged + self.residual_layer(residue)
 
 class UNET_AttentionBlock(nn.Module):
-    def __init__(self, n_head: int, n_embd: int, d_context=768):
+    def __init__(self, n_head: int, n_embd: int, d_context=768): # always 8 heads, 40,80,160 embeddings
         super().__init__()
-        channels = n_head * n_embd
+        channels = n_head * n_embd # 8*[40,80,160] = 320,640,1280
         
         self.groupnorm = nn.GroupNorm(32, channels, eps=1e-6)
         self.conv_input = nn.Conv2d(channels, channels, kernel_size=1, padding=0)
 
         self.layernorm_1 = nn.LayerNorm(channels)
-        self.attention_1 = SelfAttention(n_head, channels, in_proj_bias=False)
+        self.attention_1 = SelfAttention(n_head, channels, in_proj_bias=False) # channels = 320,640,1280, n_head is always 8
         self.layernorm_2 = nn.LayerNorm(channels)
         self.attention_2 = CrossAttention(n_head, channels, d_context, in_proj_bias=False)
         self.layernorm_3 = nn.LayerNorm(channels)
@@ -122,7 +126,7 @@ class UNET_AttentionBlock(nn.Module):
         x = self.layernorm_1(x)
         
         # (Batch_Size, Height * Width, Features) -> (Batch_Size, Height * Width, Features)
-        x = self.attention_1(x)
+        x = self.attention_1(x) # (1, 8*8=64, 1280) of (1, 64*64=4096, 320) of ...
         
         # (Batch_Size, Height * Width, Features) + (Batch_Size, Height * Width, Features) -> (Batch_Size, Height * Width, Features)
         x += residue_short
@@ -268,7 +272,7 @@ class UNET(nn.Module):
             SwitchSequential(UNET_ResidualBlock(1920, 640), UNET_AttentionBlock(8, 80)),
             
             # (Batch_Size, 1280, Height / 16, Width / 16) -> (Batch_Size, 640, Height / 16, Width / 16) -> (Batch_Size, 640, Height / 16, Width / 16)
-            SwitchSequential(UNET_ResidualBlock(1280, 640), UNET_AttentionBlock(8, 80)),
+            SwitchSequential(UNET_ResidualBlock(1280, 640), UNET_AttentionBlock(8, 80)), # I thinnk this is wrong, should also be 1920 no?
             
             # (Batch_Size, 960, Height / 16, Width / 16) -> (Batch_Size, 640, Height / 16, Width / 16) -> (Batch_Size, 640, Height / 16, Width / 16) -> (Batch_Size, 640, Height / 8, Width / 8)
             SwitchSequential(UNET_ResidualBlock(960, 640), UNET_AttentionBlock(8, 80), Upsample(640)),
@@ -342,7 +346,7 @@ class Diffusion(nn.Module):
         # (Batch, 4, Height / 8, Width / 8) -> (Batch, 320, Height / 8, Width / 8)
         output = self.unet(latent, context, time)
         
-        # (Batch, 320, Height / 8, Width / 8) -> (Batch, 4, Height / 8, Width / 8)
+        # (Batch, 320, Height / 8, Width / 8) -> (Batch, CHANNELS=4, Height / 8, Width / 8)
         output = self.final(output)
         
         # (Batch, 4, Height / 8, Width / 8)
